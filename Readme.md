@@ -1,2 +1,2 @@
-# go-ignite-client
-Apache Ignite Thin Client
+# golang ignite thin client
+Apache Ignite Thin Client on GoLang
