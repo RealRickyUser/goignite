@@ -137,7 +137,7 @@ func (i *IgniteClient) GetOrCreateCache(name string) error {
 	return i.callIgniteWithStringArg(name, opCacheGetOrCreateWithName)
 }
 
-// CreateCache calls Ignite to create cache
+// CreateCache calls Ignite to create a new cache
 func (i *IgniteClient) CreateCache(name string) error {
 	return i.callIgniteWithStringArg(name, opCacheCreateWithName)
 }
@@ -163,7 +163,7 @@ func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error
 	return respHeader.error
 }
 
-// CreateCache calls Ignite to delete existing cache
+// DeleteCache calls Ignite to delete existing cache
 func (i *IgniteClient) DeleteCache(name string) error {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheDestroy}
 	buf := new(bytes.Buffer)
