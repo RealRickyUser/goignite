@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	typeInt    = byte(3)
 	typeString = byte(9)
 )
 
@@ -55,6 +56,7 @@ func (i *IgniteClient) sendHeader(request requestHeader) error {
 	write(writer, request.requestId)
 	write(writer, request.content)
 	_ = writer.Flush()
+	//fmt.Println(buff.Bytes())
 	_, err := i.conn.Write(buff.Bytes())
 	return err
 }
@@ -112,4 +114,17 @@ func readUInt64(r *bytes.Reader) (data uint64) {
 
 func write(writer io.Writer, data interface{}) {
 	binary.Write(writer, binary.LittleEndian, data)
+}
+
+func hashCode(name string) int {
+	hash := 0
+	var h = hash
+	if len(name) > 0 {
+		val := []byte(name)
+		for i := 0; i < len(name); i++ {
+			h = 31*h + int(val[i])
+		}
+		hash = h
+	}
+	return h
 }

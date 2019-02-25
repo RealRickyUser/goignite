@@ -10,7 +10,9 @@ import (
 
 const (
 	opCacheGetNames            = uint16(1050)
+	opCacheCreateWithName      = uint16(1051)
 	opCacheGetOrCreateWithName = uint16(1052)
+	opCacheDestroy             = uint16(1056)
 )
 
 // IgniteClient stores connection data and resources
@@ -132,7 +134,17 @@ func (i *IgniteClient) GetCacheNames() (result []string, e error) {
 
 // GetOrCreateCache calls Ignite to create cache if not exists
 func (i *IgniteClient) GetOrCreateCache(name string) error {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGetOrCreateWithName}
+	return i.callIgniteWithStringArg(name, opCacheGetOrCreateWithName)
+}
+
+// CreateCache calls Ignite to create cache
+func (i *IgniteClient) CreateCache(name string) error {
+	return i.callIgniteWithStringArg(name, opCacheCreateWithName)
+}
+
+// callIgniteWithStringArg calls Ignite to do operation with opCode and sends a param
+func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error {
+	request := requestHeader{requestId: <-i.requestCounter, code: opCode}
 	buf := new(bytes.Buffer)
 	writer := bufio.NewWriter(buf)
 	write(writer, typeString)
@@ -144,7 +156,27 @@ func (i *IgniteClient) GetOrCreateCache(name string) error {
 	if err != nil {
 		return err
 	}
-	respHeader := i.getResponseHeader(opCacheGetOrCreateWithName)
+	respHeader := i.getResponseHeader(opCode)
+	if request.requestId != respHeader.requestId {
+		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
+	}
+	return respHeader.error
+}
+
+// CreateCache calls Ignite to delete existing cache
+func (i *IgniteClient) DeleteCache(name string) error {
+	request := requestHeader{requestId: <-i.requestCounter, code: opCacheDestroy}
+	buf := new(bytes.Buffer)
+	writer := bufio.NewWriter(buf)
+	hash := hashCode(name)
+	write(writer, int32(hash))
+	writer.Flush()
+	request.content = buf.Bytes()
+	err := i.sendHeader(request)
+	if err != nil {
+		return err
+	}
+	respHeader := i.getResponseHeader(opCacheDestroy)
 	if request.requestId != respHeader.requestId {
 		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
