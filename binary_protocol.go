@@ -42,6 +42,7 @@ type responseHeader struct {
 	status       uint32
 	errorMessage string
 	error        error
+	content      []byte
 }
 
 func newHandshake() handshake {
@@ -80,6 +81,9 @@ func (i *IgniteClient) getResponseHeader(cmdId uint16) (r responseHeader) {
 		r.errorMessage = fmt.Sprintf("error ignite request: %s %d", msg, cmdId)
 		r.error = fmt.Errorf(r.errorMessage)
 		return
+	} else if r.len > 12 {
+		r.content = make([]byte, r.len-12)
+		_, err = i.conn.Read(r.content)
 	}
 	return
 }

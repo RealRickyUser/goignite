@@ -15,6 +15,11 @@ const (
 	opCacheDestroy             = uint16(1056)
 )
 
+const (
+	opCacheGet = uint16(1000)
+	opCachePut = uint16(1001)
+)
+
 // IgniteClient stores connection data and resources
 type IgniteClient struct {
 	conn           net.Conn
@@ -177,6 +182,58 @@ func (i *IgniteClient) DeleteCache(name string) error {
 		return err
 	}
 	respHeader := i.getResponseHeader(opCacheDestroy)
+	if request.requestId != respHeader.requestId {
+		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
+	}
+	return respHeader.error
+}
+
+// PutCache return value from cache by key
+func (i *IgniteClient) GetCache(cache string, key int) (result int32, err error) {
+	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGet}
+	buf := new(bytes.Buffer)
+	writer := bufio.NewWriter(buf)
+	hash := hashCode(cache)
+	write(writer, int32(hash))
+	write(writer, byte(0)) // flag
+	write(writer, byte(3))
+	write(writer, int32(key))
+	writer.Flush()
+	request.content = buf.Bytes()
+	err = i.sendHeader(request)
+	if err != nil {
+		return 0, err
+	}
+	respHeader := i.getResponseHeader(opCacheGet)
+	if request.requestId != respHeader.requestId {
+		return 0, fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
+	}
+	reader := bytes.NewReader(respHeader.content)
+	reader.ReadByte() //data type
+	result = readInt32(reader)
+
+	return result, respHeader.error
+}
+
+// PutCache puts key&value into cache
+func (i *IgniteClient) PutCache(cache string, key int, value int) error {
+	request := requestHeader{requestId: <-i.requestCounter, code: opCachePut}
+	buf := new(bytes.Buffer)
+	writer := bufio.NewWriter(buf)
+	hash := hashCode(cache)
+	write(writer, int32(hash))
+	write(writer, byte(0)) // flag
+	write(writer, byte(3))
+	write(writer, int32(key))
+	write(writer, byte(3))
+	write(writer, int32(value))
+	writer.Flush()
+	request.content = buf.Bytes()
+	err := i.sendHeader(request)
+	if err != nil {
+		return err
+	}
+	respHeader := i.getResponseHeader(opCachePut)
 	if request.requestId != respHeader.requestId {
 		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
