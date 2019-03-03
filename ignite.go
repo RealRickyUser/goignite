@@ -1,8 +1,6 @@
 package goignite
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"net"
 )
@@ -34,53 +32,79 @@ func NewClient(address string) IgniteClient {
 	return IgniteClient{Address: address, requestCounter: make(chan uint64, 10)}
 }
 
-func (i *IgniteClient) createConnection() error {
-	conn, err := net.Dial("tcp", i.Address)
+func (i *IgniteClient) createConnection() (err error) {
+	han, err := i.sendHandshakeRequest()
 	if err != nil {
 		return err
 	}
-	han := newHandshake()
 
-	writer := createNewWriter()
-	l := 8 + int32(len(han.username)) + int32(len(han.password))
-	err = writer.writeAll(l, han.code, han.major, han.minor, han.patch, han.clientCode, []byte(han.username), []byte(han.password))
-	if err != nil {
+	if err = i.receiveHandshakeResponse(han); err != nil {
 		return err
+	}
+	go makeOperationIds(*i)
+	return
+}
+
+func (i *IgniteClient) sendHandshakeRequest() (han handshake, err error) {
+	i.conn, err = net.Dial("tcp", i.Address)
+	if err != nil {
+		return
+	}
+
+	han = newHandshake()
+	writer := createNewWriter()
+	rqSize := minHandshakeRequestSize + int32(len(han.username)) + int32(len(han.password))
+	err = writer.writeAll(rqSize, han.code, han.major, han.minor, han.patch, han.clientCode, []byte(han.username), []byte(han.password))
+	if err != nil {
+		return
 	}
 	buff, err := writer.flushAndGet()
 	if err != nil {
-		return err
+		return
 	}
-	_, err = conn.Write(buff)
+	_, err = i.conn.Write(buff)
 	if err != nil {
-		return err
+		return
 	}
+	return
+}
+
+func (i *IgniteClient) receiveHandshakeResponse(han handshake) (err error) {
 	resp := make([]byte, 5)
-	_, err = conn.Read(resp)
+	_, err = i.conn.Read(resp)
 	if err != nil {
-		return err
+		return
 	}
-	reader := bytes.NewReader(resp)
+	reader := createNewReader(resp)
 	var success byte
-	l = readInt32(reader)
-	success, _ = reader.ReadByte()
-	if success == 1 {
-		i.conn = conn
-		go makeOperationIds(*i)
-		return nil
-	}
-	defer conn.Close()
-	resp = make([]byte, l-1)
-	_, err = conn.Read(resp)
+	l, err := reader.readInt32()
 	if err != nil {
-		return err
+		return
 	}
-	reader = bytes.NewReader(resp)
+	success, _ = reader.readByte()
+	if success == 1 {
+		return
+	}
+	defer i.Close() // close connection on exit
+	resp = make([]byte, l-1)
+	_, err = i.conn.Read(resp)
+	if err != nil {
+		return
+	}
+	reader = createNewReader(resp)
 	serverErr := handshakeError{}
-	serverErr.major = readUShort(reader)
-	serverErr.minor = readUShort(reader)
-	serverErr.patch = readUShort(reader)
-	serverErr.message = string(resp[headerWithoutSize+1:])
+	if serverErr.major, err = reader.readUShort(); err != nil {
+		return
+	}
+	if serverErr.minor, err = reader.readUShort(); err != nil {
+		return
+	}
+	if serverErr.patch, err = reader.readUShort(); err != nil {
+		return
+	}
+	if serverErr.message, err = reader.readStringSize(len(resp) - headerWithoutSize - 1); err != nil { // string(resp[headerWithoutSize+1:])
+		return
+	}
 	return fmt.Errorf("error connecting to ignite [%s]: client [%d.%d.%d], server [%d.%d.%d]: %s",
 		i.Address,
 		han.major, han.minor, han.patch,
@@ -104,31 +128,38 @@ func (i *IgniteClient) Connect() error {
 // Close closes connection and chans.
 // For reconnect use NewClient and Connect
 func (i *IgniteClient) Close() {
-	i.conn.Close()
+	_ = i.conn.Close()
 	close(i.requestCounter)
+	i.conn = nil
 }
 
 // GetCacheNames returns list of cache names
-func (i *IgniteClient) GetCacheNames() (result []string, e error) {
+func (i *IgniteClient) GetCacheNames() (result []string, err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGetNames}
-	err := i.sendHeader(request)
+	err = i.sendHeader(request)
 	if err != nil {
 		return nil, err
 	}
-	respHeader := i.getResponseHeader(opCacheGetNames)
+	respHeader, err := i.getResponseHeader(opCacheGetNames)
+	if err != nil {
+		return
+	}
 
 	if request.requestId != respHeader.requestId {
 		return nil, fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
-	length := respHeader.len
-	resp := make([]byte, length-12)
-	_, err = i.conn.Read(resp)
 
-	reader := bytes.NewReader(resp)
-	err = binary.Read(reader, binary.LittleEndian, &length)
-	for x := 0; x < int(length); x++ {
-		reader.ReadByte() // pass a string data type
-		res := readString(reader)
+	reader := createNewReader(respHeader.content)
+	cacheCount, err := reader.readUInt32()
+	if err != nil {
+		return
+	}
+	for x := uint32(0); x < cacheCount; x++ {
+		_, _ = reader.readByte()
+		res, err := reader.readString()
+		if err != nil {
+			return nil, err
+		}
 		result = append(result, res)
 	}
 	return result, nil
@@ -145,10 +176,10 @@ func (i *IgniteClient) CreateCache(name string) error {
 }
 
 // callIgniteWithStringArg calls Ignite to do operation with opCode and sends a param
-func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error {
+func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) (err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCode}
 	writer := createNewWriter()
-	err := writer.writeAll(typeString, uint32(len(name)), []byte(name))
+	err = writer.writeAll(typeString, uint32(len(name)), []byte(name))
 	if err != nil {
 		return err
 	}
@@ -161,7 +192,10 @@ func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error
 	if err != nil {
 		return err
 	}
-	respHeader := i.getResponseHeader(opCode)
+	respHeader, err := i.getResponseHeader(opCode)
+	if err != nil {
+		return
+	}
 	if request.requestId != respHeader.requestId {
 		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
@@ -169,11 +203,11 @@ func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error
 }
 
 // DeleteCache calls Ignite to delete existing cache
-func (i *IgniteClient) DeleteCache(name string) error {
+func (i *IgniteClient) DeleteCache(name string) (err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheDestroy}
 
 	writer := createNewWriter()
-	err := writer.writeAll(hashCode(name))
+	err = writer.writeAll(hashCode(name))
 	if err != nil {
 		return err
 	}
@@ -187,14 +221,17 @@ func (i *IgniteClient) DeleteCache(name string) error {
 	if err != nil {
 		return err
 	}
-	respHeader := i.getResponseHeader(opCacheDestroy)
+	respHeader, err := i.getResponseHeader(opCacheDestroy)
+	if err != nil {
+		return
+	}
 	if request.requestId != respHeader.requestId {
 		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
 	return respHeader.error
 }
 
-// PutCache return value from cache by key
+// GetCache return value from cache by key
 func (i *IgniteClient) GetCache(cache string, key int32) (result int32, err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGet}
 
@@ -213,23 +250,29 @@ func (i *IgniteClient) GetCache(cache string, key int32) (result int32, err erro
 	if err != nil {
 		return 0, err
 	}
-	respHeader := i.getResponseHeader(opCacheGet)
+	respHeader, err := i.getResponseHeader(opCacheGet)
+	if err != nil {
+		return
+	}
 	if request.requestId != respHeader.requestId {
 		return 0, fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}
-	reader := bytes.NewReader(respHeader.content)
-	reader.ReadByte() //data type
-	result = readInt32(reader)
 
-	return result, respHeader.error
+	reader := createNewReader(respHeader.content)
+	t, _ := reader.readByte()
+	if t != typeInt {
+		err = fmt.Errorf("get key from cache: incorrect data type: expected %d, actual %d", typeInt, t)
+		return
+	}
+	return reader.readInt32()
 }
 
 // PutCache puts key&value into cache
-func (i *IgniteClient) PutCache(cache string, key int32, value int32) error {
+func (i *IgniteClient) PutCache(cache string, key int32, value int32) (err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCachePut}
 
 	writer := createNewWriter()
-	err := writer.writeAll(hashCode(cache), byte(0), byte(3), key, byte(3), value)
+	err = writer.writeAll(hashCode(cache), byte(0), byte(3), key, byte(3), value)
 	if err != nil {
 		return err
 	}
@@ -243,7 +286,10 @@ func (i *IgniteClient) PutCache(cache string, key int32, value int32) error {
 	if err != nil {
 		return err
 	}
-	respHeader := i.getResponseHeader(opCachePut)
+	respHeader, err := i.getResponseHeader(opCachePut)
+	if err != nil {
+		return
+	}
 	if request.requestId != respHeader.requestId {
 		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
 	}

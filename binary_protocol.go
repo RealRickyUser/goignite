@@ -1,13 +1,15 @@
 package goignite
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
-	"io"
 )
 
-const headerWithoutSize = 10
+const (
+	headerWithoutSize                  = 10
+	minHandshakeRequestSize            = 8
+	handshakeResponseHeaderSize        = 12
+	handshakeResponseHeaderWithLenSize = 16
+)
 
 const (
 	typeInt    = byte(3)
@@ -67,62 +69,36 @@ func (i *IgniteClient) sendHeader(request requestHeader) error {
 	return err
 }
 
-func (i *IgniteClient) getResponseHeader(cmdId uint16) (r responseHeader) {
-	resp := make([]byte, 16)
-	_, err := i.conn.Read(resp)
+func (i *IgniteClient) getResponseHeader(cmdId uint16) (r responseHeader, err error) {
+	resp := make([]byte, handshakeResponseHeaderWithLenSize)
+	_, err = i.conn.Read(resp)
 	if err != nil {
 		r.error = err
 		return
 	}
-	reader := bytes.NewReader(resp)
-	r.len = readUInt32(reader)
-	r.requestId = readUInt64(reader)
-	r.status = readUInt32(reader)
+	reader := createNewReader(resp)
+	if r.len, err = reader.readUInt32(); err != nil {
+		return
+	}
+	if r.requestId, err = reader.readUInt64(); err != nil {
+		return
+	}
+	if r.status, err = reader.readUInt32(); err != nil {
+		return
+	}
 
 	if r.status != 0 {
-		resp = make([]byte, r.len-12)
+		resp = make([]byte, r.len-handshakeResponseHeaderSize)
 		_, err = i.conn.Read(resp)
-		msg := string(resp[5:])
+		msg := string(resp[5:]) // first 4 bytes - is a length of string
 		r.errorMessage = fmt.Sprintf("error ignite request: %s %d", msg, cmdId)
 		r.error = fmt.Errorf(r.errorMessage)
 		return
-	} else if r.len > 12 {
-		r.content = make([]byte, r.len-12)
+	} else if r.len > handshakeResponseHeaderSize {
+		r.content = make([]byte, r.len-handshakeResponseHeaderSize)
 		_, err = i.conn.Read(r.content)
 	}
 	return
-}
-
-func readString(r *bytes.Reader) string {
-	var size32 uint32
-	binary.Read(r, binary.LittleEndian, &size32)
-	buf := make([]byte, size32)
-	r.Read(buf)
-	return string(buf)
-}
-
-func readUShort(r *bytes.Reader) (data uint16) {
-	binary.Read(r, binary.LittleEndian, &data)
-	return
-}
-
-func readInt32(r *bytes.Reader) (data int32) {
-	binary.Read(r, binary.LittleEndian, &data)
-	return
-}
-
-func readUInt32(r *bytes.Reader) (data uint32) {
-	binary.Read(r, binary.LittleEndian, &data)
-	return
-}
-
-func readUInt64(r *bytes.Reader) (data uint64) {
-	binary.Read(r, binary.LittleEndian, &data)
-	return
-}
-
-func write(writer io.Writer, data interface{}) {
-	binary.Write(writer, binary.LittleEndian, data)
 }
 
 // hashCode from java
