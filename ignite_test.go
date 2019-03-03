@@ -1,7 +1,6 @@
 package goignite
 
 import (
-	"bufio"
 	"bytes"
 	"testing"
 )
@@ -23,11 +22,9 @@ func TestWriteLong(t *testing.T) {
 }
 
 func testWriteAny(t *testing.T, data interface{}, expected []byte) {
-	buff := new(bytes.Buffer)
-	writer := bufio.NewWriter(buff)
-	write(writer, data)
-	writer.Flush()
-	received := buff.Bytes()
+	writer := createNewWriter()
+	_ = writer.write(data)
+	received, _ := writer.flushAndGet()
 	if !bytes.Equal(received, expected) {
 		t.Errorf("'write' makes incorrect long value, expected: %d, actual %d", expected, data)
 	}
