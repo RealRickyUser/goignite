@@ -30,12 +30,27 @@ func (i *igniteWriter) write(item interface{}) error {
 
 func (i *igniteWriter) writeAll(items ...interface{}) error {
 	for _, data := range items {
-		err := binary.Write(i.writer, igniteOrder, data)
+		err := i.write(data)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (i *igniteWriter) writeField(data interface{}) (err error) {
+	if err = i.write(getDataType(data)); err != nil {
+		return
+	}
+	switch data.(type) {
+	case string:
+		buff := []byte(data.(string))
+		if err = i.write(int32(len(buff))); err != nil {
+			return
+		}
+		return i.write(buff)
+	}
+	return i.write(data)
 }
 
 func (i *igniteWriter) flushAndGet() (result []byte, err error) {
@@ -46,6 +61,24 @@ func (i *igniteWriter) flushAndGet() (result []byte, err error) {
 
 func createNewReader(content []byte) igniteReader {
 	return igniteReader{content: content, reader: bytes.NewReader(content)}
+}
+
+func (r *igniteReader) readAny(data interface{}, dataType byte) (err error) {
+	switch dataType {
+	case typeString:
+		size, err := r.readInt32()
+		if err != nil {
+			return err
+		}
+		buff := make([]byte, size)
+		if err = binary.Read(r.reader, igniteOrder, &buff); err != nil {
+			return err
+		}
+		result := data.(*string)
+		*result = string(buff)
+		return nil
+	}
+	return binary.Read(r.reader, igniteOrder, data)
 }
 
 func (r *igniteReader) readByte() (byte, error) {

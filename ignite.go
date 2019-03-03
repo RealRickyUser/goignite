@@ -12,11 +12,6 @@ const (
 	opCacheDestroy             = uint16(1056)
 )
 
-const (
-	opCacheGet = uint16(1000)
-	opCachePut = uint16(1001)
-)
-
 // IgniteClient stores connection data and resources
 type IgniteClient struct {
 	conn           net.Conn
@@ -135,7 +130,7 @@ func (i *IgniteClient) Close() {
 
 // GetCacheNames returns list of cache names
 func (i *IgniteClient) GetCacheNames() (result []string, err error) {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGetNames}
+	request := requestHeader{requestId: i.getNextOperationId(), code: opCacheGetNames}
 	err = i.sendHeader(request)
 	if err != nil {
 		return nil, err
@@ -166,18 +161,26 @@ func (i *IgniteClient) GetCacheNames() (result []string, err error) {
 }
 
 // GetOrCreateCache calls Ignite to create cache if not exists
-func (i *IgniteClient) GetOrCreateCache(name string) error {
-	return i.callIgniteWithStringArg(name, opCacheGetOrCreateWithName)
+func (i *IgniteClient) GetOrCreateCache(name string) (cache IgniteCache, err error) {
+	return i.callCacheAction(name, opCacheGetOrCreateWithName)
 }
 
 // CreateCache calls Ignite to create a new cache
-func (i *IgniteClient) CreateCache(name string) error {
-	return i.callIgniteWithStringArg(name, opCacheCreateWithName)
+func (i *IgniteClient) CreateCache(name string) (cache IgniteCache, err error) {
+	return i.callCacheAction(name, opCacheCreateWithName)
+}
+
+func (i *IgniteClient) callCacheAction(name string, opCode uint16) (cache IgniteCache, err error) {
+	err = i.callIgniteWithStringArg(name, opCode)
+	if err == nil {
+		cache = IgniteCache{cacheName: name, cacheHashCode: hashCode(name), client: i}
+	}
+	return
 }
 
 // callIgniteWithStringArg calls Ignite to do operation with opCode and sends a param
 func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) (err error) {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCode}
+	request := requestHeader{requestId: i.getNextOperationId(), code: opCode}
 	writer := createNewWriter()
 	err = writer.writeAll(typeString, uint32(len(name)), []byte(name))
 	if err != nil {
@@ -204,7 +207,7 @@ func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) (err 
 
 // DeleteCache calls Ignite to delete existing cache
 func (i *IgniteClient) DeleteCache(name string) (err error) {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCacheDestroy}
+	request := requestHeader{requestId: i.getNextOperationId(), code: opCacheDestroy}
 
 	writer := createNewWriter()
 	err = writer.writeAll(hashCode(name))
@@ -231,67 +234,6 @@ func (i *IgniteClient) DeleteCache(name string) (err error) {
 	return respHeader.error
 }
 
-// GetCache return value from cache by key
-func (i *IgniteClient) GetCache(cache string, key int32) (result int32, err error) {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGet}
-
-	writer := createNewWriter()
-	err = writer.writeAll(hashCode(cache), byte(0), byte(3), key)
-	if err != nil {
-		return 0, err
-	}
-	buff, err := writer.flushAndGet()
-	if err != nil {
-		return 0, err
-	}
-	request.content = buff
-
-	err = i.sendHeader(request)
-	if err != nil {
-		return 0, err
-	}
-	respHeader, err := i.getResponseHeader(opCacheGet)
-	if err != nil {
-		return
-	}
-	if request.requestId != respHeader.requestId {
-		return 0, fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
-	}
-
-	reader := createNewReader(respHeader.content)
-	t, _ := reader.readByte()
-	if t != typeInt {
-		err = fmt.Errorf("get key from cache: incorrect data type: expected %d, actual %d", typeInt, t)
-		return
-	}
-	return reader.readInt32()
-}
-
-// PutCache puts key&value into cache
-func (i *IgniteClient) PutCache(cache string, key int32, value int32) (err error) {
-	request := requestHeader{requestId: <-i.requestCounter, code: opCachePut}
-
-	writer := createNewWriter()
-	err = writer.writeAll(hashCode(cache), byte(0), byte(3), key, byte(3), value)
-	if err != nil {
-		return err
-	}
-	buff, err := writer.flushAndGet()
-	if err != nil {
-		return err
-	}
-	request.content = buff
-
-	err = i.sendHeader(request)
-	if err != nil {
-		return err
-	}
-	respHeader, err := i.getResponseHeader(opCachePut)
-	if err != nil {
-		return
-	}
-	if request.requestId != respHeader.requestId {
-		return fmt.Errorf("wrong response id: expected %d, was %d", request.requestId, respHeader.requestId)
-	}
-	return respHeader.error
+func (i *IgniteClient) getNextOperationId() uint64 {
+	return <-i.requestCounter
 }

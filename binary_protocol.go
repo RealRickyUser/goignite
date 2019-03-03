@@ -12,8 +12,25 @@ const (
 )
 
 const (
-	typeInt    = byte(3)
-	typeString = byte(9)
+	typeByte   = byte(1) // int8
+	typeShort  = byte(2) // int16
+	typeInt    = byte(3) // int32
+	typeLong   = byte(4) // int64
+	typeFloat  = byte(5) // float32
+	typeDouble = byte(6) // float64
+	typeChar   = byte(7) // utf-16
+	typeBool   = byte(8) // byte, 0 = false, else true
+	typeString = byte(9) // utf-8
+
+	typeUUID      = byte(10) // 16 bytes
+	typeDate      = byte(11) // milliseconds since epoch, POSIX time
+	typeDecimal   = byte(30) // Numeric value of any desired precision and scale.
+	typeTimestamp = byte(33) // milliseconds since epoch with nanoseconds fraction
+	typeTime      = byte(36) // number of milliseconds elapsed since midnight
+
+	typeNull = byte(101) // just null value
+
+	typeError = byte(0) // fake data type
 )
 
 type handshake struct {
