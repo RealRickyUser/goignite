@@ -1,7 +1,6 @@
 package goignite
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -24,7 +23,7 @@ const (
 type IgniteClient struct {
 	conn           net.Conn
 	requestCounter chan uint64
-	// Error stores any operation error
+	// Error stores any operation error instead of connection error
 	Error error
 	// Address stores connection data (host and port) for client
 	Address string
@@ -42,19 +41,17 @@ func (i *IgniteClient) createConnection() error {
 	}
 	han := newHandshake()
 
-	b := new(bytes.Buffer)
-	writer := bufio.NewWriter(b)
+	writer := createNewWriter()
 	l := 8 + int32(len(han.username)) + int32(len(han.password))
-	write(writer, l)
-	write(writer, han.code)
-	write(writer, han.major)
-	write(writer, han.minor)
-	write(writer, han.patch)
-	write(writer, han.clientCode)
-	write(writer, []byte(han.username))
-	write(writer, []byte(han.password))
-	_ = writer.Flush()
-	_, err = conn.Write(b.Bytes())
+	err = writer.writeAll(l, han.code, han.major, han.minor, han.patch, han.clientCode, []byte(han.username), []byte(han.password))
+	if err != nil {
+		return err
+	}
+	buff, err := writer.flushAndGet()
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(buff)
 	if err != nil {
 		return err
 	}
@@ -83,7 +80,7 @@ func (i *IgniteClient) createConnection() error {
 	serverErr.major = readUShort(reader)
 	serverErr.minor = readUShort(reader)
 	serverErr.patch = readUShort(reader)
-	serverErr.message = string(resp[11:])
+	serverErr.message = string(resp[headerWithoutSize+1:])
 	return fmt.Errorf("error connecting to ignite [%s]: client [%d.%d.%d], server [%d.%d.%d]: %s",
 		i.Address,
 		han.major, han.minor, han.patch,
@@ -150,14 +147,17 @@ func (i *IgniteClient) CreateCache(name string) error {
 // callIgniteWithStringArg calls Ignite to do operation with opCode and sends a param
 func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCode}
-	buf := new(bytes.Buffer)
-	writer := bufio.NewWriter(buf)
-	write(writer, typeString)
-	write(writer, uint32(len(name)))
-	write(writer, []byte(name))
-	writer.Flush()
-	request.content = buf.Bytes()
-	err := i.sendHeader(request)
+	writer := createNewWriter()
+	err := writer.writeAll(typeString, uint32(len(name)), []byte(name))
+	if err != nil {
+		return err
+	}
+	buff, err := writer.flushAndGet()
+	if err != nil {
+		return err
+	}
+	request.content = buff
+	err = i.sendHeader(request)
 	if err != nil {
 		return err
 	}
@@ -171,13 +171,19 @@ func (i *IgniteClient) callIgniteWithStringArg(name string, opCode uint16) error
 // DeleteCache calls Ignite to delete existing cache
 func (i *IgniteClient) DeleteCache(name string) error {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheDestroy}
-	buf := new(bytes.Buffer)
-	writer := bufio.NewWriter(buf)
-	hash := hashCode(name)
-	write(writer, int32(hash))
-	writer.Flush()
-	request.content = buf.Bytes()
-	err := i.sendHeader(request)
+
+	writer := createNewWriter()
+	err := writer.writeAll(hashCode(name))
+	if err != nil {
+		return err
+	}
+	buff, err := writer.flushAndGet()
+	if err != nil {
+		return err
+	}
+	request.content = buff
+
+	err = i.sendHeader(request)
 	if err != nil {
 		return err
 	}
@@ -189,17 +195,20 @@ func (i *IgniteClient) DeleteCache(name string) error {
 }
 
 // PutCache return value from cache by key
-func (i *IgniteClient) GetCache(cache string, key int) (result int32, err error) {
+func (i *IgniteClient) GetCache(cache string, key int32) (result int32, err error) {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCacheGet}
-	buf := new(bytes.Buffer)
-	writer := bufio.NewWriter(buf)
-	hash := hashCode(cache)
-	write(writer, int32(hash))
-	write(writer, byte(0)) // flag
-	write(writer, byte(3))
-	write(writer, int32(key))
-	writer.Flush()
-	request.content = buf.Bytes()
+
+	writer := createNewWriter()
+	err = writer.writeAll(hashCode(cache), byte(0), byte(3), key)
+	if err != nil {
+		return 0, err
+	}
+	buff, err := writer.flushAndGet()
+	if err != nil {
+		return 0, err
+	}
+	request.content = buff
+
 	err = i.sendHeader(request)
 	if err != nil {
 		return 0, err
@@ -216,20 +225,21 @@ func (i *IgniteClient) GetCache(cache string, key int) (result int32, err error)
 }
 
 // PutCache puts key&value into cache
-func (i *IgniteClient) PutCache(cache string, key int, value int) error {
+func (i *IgniteClient) PutCache(cache string, key int32, value int32) error {
 	request := requestHeader{requestId: <-i.requestCounter, code: opCachePut}
-	buf := new(bytes.Buffer)
-	writer := bufio.NewWriter(buf)
-	hash := hashCode(cache)
-	write(writer, int32(hash))
-	write(writer, byte(0)) // flag
-	write(writer, byte(3))
-	write(writer, int32(key))
-	write(writer, byte(3))
-	write(writer, int32(value))
-	writer.Flush()
-	request.content = buf.Bytes()
-	err := i.sendHeader(request)
+
+	writer := createNewWriter()
+	err := writer.writeAll(hashCode(cache), byte(0), byte(3), key, byte(3), value)
+	if err != nil {
+		return err
+	}
+	buff, err := writer.flushAndGet()
+	if err != nil {
+		return err
+	}
+	request.content = buff
+
+	err = i.sendHeader(request)
 	if err != nil {
 		return err
 	}

@@ -1,12 +1,13 @@
 package goignite
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 )
+
+const headerWithoutSize = 10
 
 const (
 	typeInt    = byte(3)
@@ -50,15 +51,19 @@ func newHandshake() handshake {
 }
 
 func (i *IgniteClient) sendHeader(request requestHeader) error {
-	buff := new(bytes.Buffer)
-	writer := bufio.NewWriter(buff)
-	write(writer, uint32(len(request.content))+10)
-	write(writer, request.code)
-	write(writer, request.requestId)
-	write(writer, request.content)
-	_ = writer.Flush()
-	//fmt.Println(buff.Bytes())
-	_, err := i.conn.Write(buff.Bytes())
+	w := createNewWriter()
+	err := w.writeAll(uint32(len(request.content))+headerWithoutSize,
+		request.code,
+		request.requestId,
+		request.content)
+	if err != nil {
+		return err
+	}
+	buff, err := w.flushAndGet()
+	if err != nil {
+		return err
+	}
+	_, err = i.conn.Write(buff)
 	return err
 }
 
@@ -120,7 +125,8 @@ func write(writer io.Writer, data interface{}) {
 	binary.Write(writer, binary.LittleEndian, data)
 }
 
-func hashCode(name string) int {
+// hashCode from java
+func hashCode(name string) int32 {
 	hash := 0
 	var h = hash
 	if len(name) > 0 {
@@ -130,5 +136,5 @@ func hashCode(name string) int {
 		}
 		hash = h
 	}
-	return h
+	return int32(h)
 }
